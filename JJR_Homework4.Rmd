@@ -1,0 +1,147 @@
+---
+title: "Homework 4"
+author: "Juliette J. Rubin"
+date: "March 5, 2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library("raster")
+library("rgeos")
+library("rgdal")
+library("sp")
+library("betareg")
+
+```
+
+## Bats on the landscape
+
+I have chosen to study tree bat roost sites, with an environmental predictor of moonlight gradiant across a landscape
+
+a) While some bats roost and hunt in open space, many bats are lunarphobic and thus will only fly in dark, canopy-protected areas. Additionally, tree bats roost singly in tree hollows or under tree bark, rather than in group-oriented caves.
+
+b) The moonlight predictor is highly spatially autocorrelated (low phi) because tropical secondary forest is usually dense and patchy, and thus the darker areas on a landscape will be clumped and the moonlit, open areas will also be somewhat continuous
+
+
+```{r bats}
+
+rmvn <- function(n, mu = 0, V = matrix(1)) {
+  p <- length(mu)
+  if (any(is.na(match(dim(V), p)))) 
+    stop("Dimension problem!")
+  D <- chol(V)
+  t(matrix(rnorm(n * p), ncol = p) %*% D + rep(mu, rep(n, p)))
+}
+#you can increase SD by adding ,sd=10 after (n*p). In the given rnorm function the sd is given at 1, so you have to specify if you want it to be different.
+#making matrix from draws from random dist
+
+# Set up a square lattice region
+simgrid <- expand.grid(1:50, 1:50)
+n <- nrow(simgrid)
+
+# Set up distance matrix
+distance <- as.matrix(dist(simgrid))
+
+#larger phi is less autocorrelated
+phi = .04 
+plot(1:100, exp(-phi * 1:100), type = "l", xlab = "Distance", ylab = "Correlation")
+
+X <- rpois(n, lambda=exp(-1+rmvn(1, rep(0, n), exp(-phi * distance))))
+
+
+#X<-rbinom(n, prob=plogis(-5+rmvn(1,rep(0,n),exp(-phi*distance))),size=3)
+
+
+
+# Visualize results
+Xraster <- rasterFromXYZ(cbind(simgrid[, 1:2] - 0.5, X))
+
+plot(Xraster)
+
+#Converting raster to a dataframe
+spat_dat=rasterToPoints(Xraster)
+head(spat_dat)
+nrow(spat_dat)
+
+#pulling out environmental covariate from sample points
+GO = sample(x=c(1:nrow(spat_dat)),size=40)
+
+points(spat_dat[GO,c(1:2)])
+
+#creating parameters for bat presence amidst moonlight
+presence_intercept=-2.7
+presence_slope=0.8
+
+#zero inflated model/hurdle model
+PA <- rbinom(40,plogis(presence_intercept+spat_dat[GO,3]*presence_slope),
+             size=1)
+
+
+#Determining bat abundance
+
+count_intercept=-1.9
+count_slope=0.8
+over_dispersion=0.5
+
+
+
+#PA is part of zero inflated process - if we draw 0 then abundance doesn't matter because present/absent data indicates that it isn't there
+abundance=PA*rnbinom(40,mu=
+                       exp(count_intercept+count_slope*spat_dat[GO,3]),
+                     size=over_dispersion)
+
+plot(abundance~spat_dat[GO,3])
+
+#to give to partner
+write.csv(data.frame(abundance,spat_dat[GO,3]),file="fake_data.csv")
+```
+
+
+c) sample organism points are constrained by the number of radiotelemetry units we can deploy on the landscape (40)
+
+e) we might observe a hurdle model because in localities of intense moonlight, there will likely be no bats, while in dark forested areas we are interested in the abundance of individuals (since we know they will be there)
+
+f) We assume that these distributions are positive and that they are overdispersed
+
+
+```{r ptarmigan}
+
+#working with the data frame from Clara
+icybirds<-read.csv("icybirds.csv")
+
+#coding presence/absence
+PA1=ifelse(icybirds$abundance>0,1,0)
+
+#creating a binomial model with the data just to measure presence/absence as a function of %cover of ice
+glm(PA1~icybirds$environmental_covariate,family="binomial")
+#intercept: -2.14, slope: 0.827
+plot(PA1~icybirds$environmental_covariate)
+
+
+#subsetting data by presence
+abundance2 <- icybirds[-which(icybirds$abundance==0),]
+abundance2
+
+#running a glm with this subsetted data to find coefficients to use in beta distribution
+glm(abundance2$abundance~abundance2$environmental_covariate, family="poisson")
+#intercept: 0.851, slope:0.866
+
+ice_cover=runif(100,min=0,max=1)
+#recapturing coefficients by first simulating from the beta distribution
+mean_relationship=plogis(0.851+0.866*ice_cover^2)
+fractional_cover<-rbeta(100,shape1=mean_relationship*.5,shape2=1-mean_relationship*.5)
+plot(fractional_cover~icybirds$environmental_covariate)
+
+#building the betareg model
+icybeta_model<-betareg(fractional_cover~icybirds$environmental_covariate)
+coef(icybeta_model)
+#intercept: -0.398, environmental_covariate(%ice cover): -0.02, phi:0.78
+# These data are quite overdispersed because small phi
+plogis(-0.398)
+#baseline ptarmigan per 30m^2 landsat pixel is 0.40
+
+```
+
+i) we can measure autocorrelation by assessing phi, where a larger phi indicates less autocorrelation and a smaller phi indicates more.
